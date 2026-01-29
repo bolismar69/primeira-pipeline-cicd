@@ -3,41 +3,69 @@ on:
   push:
     branches: ["main"]
   workflow_dispatch:
+
 jobs:
   CI:
     runs-on: ubuntu-latest
+    outputs:
+      docker_tag: v${{ github.run_number }} # Exporta a tag para o job de CD
     steps:
     - name: Obtendo o código
-      uses: actions/checkout@v4.1.5
+      uses: actions/checkout@v4
+
     - name: Autenticação no Docker Hub
-      uses: docker/login-action@v3.1.0
+      uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
+
     - name: Build da Imagem Docker
-      uses: docker/build-push-action@v5.3.0
+      uses: docker/build-push-action@v5
       with:
         context: ./src
         file: ./src/Dockerfile
         push: true
         tags: | 
-          fabricioveronez/aula-primeira-pipeline:v${{ github.run_number }} 
-          fabricioveronez/aula-primeira-pipeline:latest 
+          ${{ secrets.DOCKERHUB_USERNAME }}/aula-primeira-pipeline:v${{ github.run_number }}
+          ${{ secrets.DOCKERHUB_USERNAME }}/aula-primeira-pipeline:latest 
+
   CD:
     runs-on: ubuntu-latest
     needs: [CI]
     steps: 
     - name: Obtendo o código
-      uses: actions/checkout@v4.1.5
+      uses: actions/checkout@v4
+
     - name: Configuração de contexto do Kubernetes
-      uses: azure/k8s-set-context@v4.0.0
+      uses: azure/k8s-set-context@v4
       with:
         method: kubeconfig
         kubeconfig: ${{ secrets.K8S_CONFIG }}
-    - name: Execução do Manifesto
-      uses: Azure/k8s-deploy@v5
-      with:
-        manifests: |
-          ./k8s/deployment.yaml
-        images: |
-          fabricioveronez/aula-primeira-pipeline:v${{ github.run_number }}
+
+    - name: Atualizando a Tabela de Versões (Kustomize)
+      run: |
+        # Usamos a tag gerada no CI
+        NEW_TAG="v${{ github.run_number }}"
+        
+        # Entra no diretório onde estão os manifestos
+        cd k8s/
+        
+        # O Kustomize edita o arquivo kustomization.yaml definindo a nova tag oficial
+        kustomize edit set image ${{ secrets.DOCKERHUB_USERNAME }}/aula-primeira-pipeline=${{ secrets.DOCKERHUB_USERNAME }}/aula-primeira-pipeline:$NEW_TAG
+        
+        echo "Kustomization atualizado para a versão: $NEW_TAG"
+
+    - name: Execução do Deploy via Kustomize
+      run: |
+        # Em vez de aplicar o deployment.yaml puro, aplicamos via kustomize (-k)
+        # Isso garante que todas as transformações (tags, labels, etc) sejam injetadas
+        kubectl apply -k k8s/
+
+    - name: Commit da Nova Versão Oficial
+      # Opcional: Faz o robô salvar a nova tag no seu Git para persistir a "tabela"
+      run: |
+        git config --global user.name "FBSO Robot"
+        git config --global user.email "robot@fbso.com.br"
+        git add k8s/kustomization.yaml
+        git commit -m "chore(infra): release v${{ github.run_number }} [skip ci]" || echo "Sem mudanças para commitar"
+        git push origin main

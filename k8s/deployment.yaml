@@ -13,7 +13,7 @@ spec:
     spec:
       containers:
       - name: web
-        image: bolismar69/primeira-pipeline-cicd
+        image: bolismar69/primeira-pipeline-cicd:${IMAGE_TAG}
         ports:
         - containerPort: 5000
 --- 
