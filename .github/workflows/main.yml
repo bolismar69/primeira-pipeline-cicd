@@ -21,8 +21,8 @@ jobs:
         file: ./src/Dockerfile
         push: true
         tags: | 
-          fabricioveronez/aula-primeira-pipeline:v${{ github.run_number }} 
-          fabricioveronez/aula-primeira-pipeline:latest 
+          ${{ secrets.DOCKERHUB_USERNAME }}/aula-primeira-pipeline:v${{ github.run_number }} 
+          ${{ secrets.DOCKERHUB_USERNAME }}/aula-primeira-pipeline:latest 
   CD:
     runs-on: ubuntu-latest
     needs: [CI]
@@ -40,4 +40,4 @@ jobs:
         manifests: |
           ./k8s/deployment.yaml
         images: |
-          fabricioveronez/aula-primeira-pipeline:v${{ github.run_number }}
+          ${{ secrets.DOCKERHUB_USERNAME }}/aula-primeira-pipeline:v${{ github.run_number }}
