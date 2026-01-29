@@ -99,11 +99,3 @@ git push -u origin release/v1.0.0-pix-automatico
 
 
 
-
-
-
-
-
-
-
-
