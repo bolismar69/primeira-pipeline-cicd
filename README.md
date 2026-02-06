@@ -98,4 +98,23 @@ git push -u origin release/v1.0.0-pix-automatico
 ### ```clone``` -> 2. ```checkout develop``` -> 3. vcheckout -b feature/``` -> 4. ```add/commit/push (diário)``` -> 5. ```PR para develop``` -> 6. ```Criação de Release (pelo líder)```.
 
 
+## CURL de chamado ao workflow de CD
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  https://api.github.com/repos/fbso/monorepo/actions/workflows/cd-generic.yml/dispatches \
+  -d '{
+    "ref": "main",
+    "inputs": {
+      "service_name": "pix-api",
+      "image_repository": "bolismar69/pix-automatico-repo",
+      "docker_tag": "1d6f543e5-v42",
+      "branch_origem": "main",
+      "k8s_path": "k8s"
+    }
+  }'
+```
+
+
 

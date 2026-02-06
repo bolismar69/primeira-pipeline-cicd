@@ -1,0 +1,132 @@
+# .github/workflows/call-version-tracker.yml
+name: Version Tracker Specialist
+
+on:
+  workflow_call:
+    inputs:
+      service_name:      { required: true, type: string }
+      image_repository:  { required: true, type: string }
+      docker_tag:        { required: true, type: string }
+      environment:       { required: true, type: string }
+
+jobs:
+  # TAREFA 1: Processa apenas os arquivos Markdown (Histórico e Inventário)
+  generate-markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update MD Files
+        shell: python
+        run: |
+          import os
+          from datetime import datetime
+          service, env, tag, img = "${{ inputs.service_name }}", "${{ inputs.environment }}", "${{ inputs.docker_tag }}", "${{ inputs.image_repository }}"
+          now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+          # HISTORY.md (Append)
+          with open("HISTORY.md", "a+") as f:
+              if os.stat("HISTORY.md").st_size == 0:
+                  f.write("| Service | Env | Tag | Date |\n|---|---|---|---|\n")
+              f.write(f"| {service} | {env} | {tag} | {now} |\n")
+
+          # INVENTORY.md (Upsert)
+          inventory_md = "INVENTORY.md"
+          header = "| Service | Image | Env | Current Tag | Last Update |\n|---|---|---|---|---|\n"
+          new_line = f"| {service} | {img} | {env} | {tag} | {now} |\n"
+          md_lines = [header]
+          if os.path.exists(inventory_md):
+              with open(inventory_md, "r") as f:
+                  md_lines = [l for l in f.readlines() if not (f"| {service} |" in l and f"| {env} |" in l)]
+          md_lines.append(new_line)
+          with open(inventory_md, "w") as f:
+              f.writelines(md_lines)
+
+      - name: Upload MD Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: markdown-data
+          path: |
+            HISTORY.md
+            INVENTORY.md
+          overwrite: true
+          retention-days: 1
+
+  # TAREFA 2: Processa apenas o arquivo JSON estruturado
+  generate-json:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update JSON File
+        shell: python
+        run: |
+          import os, json
+          from datetime import datetime
+          service, env, tag, img = "${{ inputs.service_name }}", "${{ inputs.environment }}", "${{ inputs.docker_tag }}", "${{ inputs.image_repository }}"
+          now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+          inventory_json = "inventory.json"
+          data = []
+          if os.path.exists(inventory_json):
+              with open(inventory_json, "r") as f:
+                  try: data = json.load(f)
+                  except: data = []
+
+          data = [item for item in data if not (item['service'] == service and item['environment'] == env)]
+          data.append({"service": service, "image": img, "environment": env, "tag": tag, "last_update": now})
+
+          with open(inventory_json, "w") as f:
+              json.dump(data, f, indent=4)
+
+      - name: Upload JSON Result
+        uses: actions/upload-artifact@v4
+        with:
+          name: json-data
+          path: inventory.json
+          overwrite: true
+          retention-days: 1
+
+  # TAREFA 3: Sincroniza tudo de volta para o Git
+  commit-changes:
+    runs-on: ubuntu-latest
+    needs: [generate-markdown, generate-json]
+    # if: always() # Garante que rodará mesmo se um dos geradores falhar
+    if: success() || failure() || cancelled()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download MD Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: markdown-data
+        continue-on-error: true # Se falhar, tenta baixar o outro
+
+      - name: Download JSON Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: json-data
+        continue-on-error: true # Se falhar, vai fazer commit dos MDs apenas
+
+      - name: Commit and Push Files
+        run: |
+          git config --global user.name "FBSO Tracker Bot"
+          git config --global user.email "tracker@fbso.com.br"
+          
+          # Adiciona apenas arquivos que existem (caso um job tenha falhado)
+          [ -f HISTORY.md ] && git add HISTORY.md
+          [ -f INVENTORY.md ] && git add INVENTORY.md
+          [ -f inventory.json ] && git add inventory.json
+          
+          # Verifica se há algo para commitar antes de dar push
+          if git diff --staged --quiet; then
+            echo "Nada para atualizar."
+          else
+            git commit -m "docs: sync version tracking for ${{ inputs.service_name }} [skip ci]"
+            git push
+          fi

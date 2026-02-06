@@ -1,0 +1,108 @@
+# .github/workflows/trigger-cd.yml
+name: Corporate CD Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      service_name:
+        description: 'Nome do serviço (ex: pix-api, crm-system)'
+        required: true
+        type: string
+      image_repository:
+        description: 'Caminho completo da imagem (ex: bolismar69/pix-repo)'
+        required: true
+        type: string
+      docker_tag:
+        description: 'Tag Hexadecimal gerada no CI'
+        required: true
+        type: string
+      branch_origem:
+        description: 'Branch que disparou o processo'
+        required: true
+        type: string
+      k8s_path:
+        description: 'Caminho base dos manifestos k8s no repositório'
+        required: false
+        default: 'k8s'
+        type: string
+
+jobs:
+  deploy:
+    name: Deploy ${{ github.event.inputs.service_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch_origem }}
+
+      - name: Definir Overlay
+        id: set-env
+        run: |
+          BRANCH="${{ github.event.inputs.branch_origem }}"
+          if [[ "$BRANCH" == "main" ]]; then
+            echo "OVERLAY=production" >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH" == "develop" ]]; then
+            echo "OVERLAY=staging" >> $GITHUB_OUTPUT
+          else
+            echo "OVERLAY=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Configurar K8s
+        uses: azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.K8S_CONFIG }}
+
+      - name: Atualizar Versão (Kustomize)
+        run: |
+          # Variáveis para facilitar a leitura
+          IMG="${{ github.event.inputs.image_repository }}"
+          TAG="${{ github.event.inputs.docker_tag }}"
+          PATH_BASE="${{ github.event.inputs.k8s_path }}"
+          OVERLAY="${{ steps.set-env.outputs.OVERLAY }}"
+          
+          echo "Atualizando $IMG para a tag $TAG no overlay $OVERLAY"
+          
+          cd $PATH_BASE/overlays/$OVERLAY
+          
+          # O Kustomize localiza a imagem pelo nome original e troca pelo novo repositório:tag
+          # Usamos o service_name como âncora se necessário, ou apenas o repositório
+          kustomize edit set image $IMG=$IMG:$TAG
+
+      - name: Executar Deploy
+        run: |
+          PATH_BASE="${{ github.event.inputs.k8s_path }}"
+          OVERLAY="${{ steps.set-env.outputs.OVERLAY }}"
+          kubectl apply -k $PATH_BASE/overlays/$OVERLAY/
+
+      - name: GitOps Sync (Commit & Push)
+        run: |
+          PATH_BASE="${{ github.event.inputs.k8s_path }}"
+          OVERLAY="${{ steps.set-env.outputs.OVERLAY }}"
+          SERVICE="${{ github.event.inputs.service_name }}"
+          
+          git config --global user.name "FBSO Corporate Robot"
+          git config --global user.email "devops@fbso.com.br"
+          
+          git add $PATH_BASE/overlays/$OVERLAY/kustomization.yaml
+          git commit -m "chore($SERVICE): deploy $OVERLAY tag ${{ github.event.inputs.docker_tag }} [skip ci]"
+          git push origin ${{ github.event.inputs.branch_origem }}
+
+      - name: Notificar Rastreador de Versões
+        uses: ./.github/workflows/version-tracker.yml
+        with:
+          service_name: ${{ github.event.inputs.service_name }}
+          image_repository: ${{ github.event.inputs.image_repository }}
+          docker_tag: ${{ github.event.inputs.docker_tag }}
+          environment: ${{ steps.set-env.outputs.OVERLAY }}
+      
+      - name: Notify Success
+        if: success() || failure() || cancelled()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.issues.createComment({
+              issue_number: ${{ github.event.issue.number || 0 }},
+              body: `:white_check_mark: Deployment of **${{ github.event.inputs.service_name }}** to **${{ steps.set-env.outputs.OVERLAY }}** was successful!`
+            })

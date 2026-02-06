@@ -1,0 +1,79 @@
+# ./.github/workflows/trigger-ci.yml
+name: CI Pipeline
+on: 
+  push:
+    # branches: ["main"]
+  pull_request:
+    # branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  CI:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Obtendo o código
+      uses: actions/checkout@v4
+
+    - name: Autenticação no Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Definir a tag da build
+      run: |
+        # 1. Obtém a data atual (Brasília/Local ou UTC) no formato solicitado
+        # YYYYMMDDHHMM (Ex: 202601300038)
+        TIMESTAMP=$(date +'%Y%m%d%H%M')
+        
+        # 2. Converte o timestamp para Hexadecimal
+        HEX_TIMESTAMP=$(printf '%x\n' $TIMESTAMP)
+        
+        # 3. Define a versão incremental (run_number)
+        RUN_NUMBER="v${{ github.run_number }}"
+        
+        # 4. Concatena os dois: HEX + RUN_NUMBER (Ex: 1d6f543e586-v42)
+        # Usar o hífen ajuda na legibilidade
+        FINAL_TAG="${HEX_TIMESTAMP}-${RUN_NUMBER}"
+        
+        # 5. Salva no GITHUB_ENV para uso nos próximos steps
+        echo "DOCKER_TAG=$FINAL_TAG" >> $GITHUB_ENV
+        
+        echo "Tag gerada com sucesso: $FINAL_TAG"
+
+    - name: Build da Imagem Docker
+      uses: docker/build-push-action@v5
+      with:
+        context: ./src
+        file: ./src/Dockerfile
+        push: true
+        tags: | 
+          ${{ secrets.DOCKERHUB_USERNAME }}/aula-primeira-pipeline:${{ env.DOCKER_TAG }}
+          ${{ secrets.DOCKERHUB_USERNAME }}/aula-primeira-pipeline:latest 
+
+  CD:
+    runs-on: ubuntu-latest
+    needs: [CI]
+    if: success() # Só executa o CD se o CI passar
+    steps: 
+    - name: Chamando processo de CD Corporativo
+      uses: actions/github-script@v6
+      with:
+        # Nota: Se o CD estiver em outro repositório, use um Personal Access Token (PAT)
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const branchLimpa = context.ref.replace('refs/heads/', '');
+          
+          await github.actions.createWorkflowDispatch({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            workflow_id: 'cd-generic.yml', // Nome do arquivo genérico que criamos
+            ref: context.ref,              // Executa o CD na mesma branch do CI
+            inputs: {
+              service_name: 'pix-api',      # Identificador do serviço
+              image_repository: '${{ secrets.DOCKERHUB_USERNAME }}/aula-primeira-pipeline',
+              docker_tag: '${{ env.DOCKER_TAG }}',
+              branch_origem: branchLimpa,
+              k8s_path: 'k8s'               # Pasta onde estão os overlays
+            }
+          });
